@@ -5,10 +5,8 @@ import functools as ft
 from maya.OpenMaya import MVector
 import maya.OpenMaya as om
 import re
-import operator
 import heapq
-
-baseMeshName = ""
+import os
 
 def calculate_distances(graph, starting_vertex):
     distances = [999999] * len( graph )
@@ -101,6 +99,14 @@ def getNormal(face_):
                       float(normal[4]) )
     return normal
 
+def getIndexOfTuple(l, index, value):
+    for pos,t in enumerate(l):
+        if t[index] == value:
+            return pos
+
+    # Matches behavior of list.index
+    raise ValueError("list.index(x): x not in list")
+
 def getClosestVertex( objectPos, baseMesh ):
     object = om.MPoint( objectPos[0], objectPos[1], objectPos[2] )
 
@@ -132,7 +138,7 @@ def getClosestVertex( objectPos, baseMesh ):
             closestID = faceVertices[i]
     return closestID
 
-def populateAlongSurface( objects, inwards, startFrame, frameRange):
+def populateAlongSurface( objects, inwards, startFrame, frameRange, growthSpeed):
     objSizes = []
     
     for obj in objects:
@@ -140,6 +146,7 @@ def populateAlongSurface( objects, inwards, startFrame, frameRange):
     
     graph = g.getVertices()
     spherePos = mc.xform(controlSphereName, q = True, ws = True, rp = 1)
+    
     
     sel = om.MSelectionList()
     dag = om.MDagPath()
@@ -159,9 +166,8 @@ def populateAlongSurface( objects, inwards, startFrame, frameRange):
     for i in range(len(objects)):
         objPos = mc.xform(objects[i], q = True, ws = True, rp = 1) 
         objectDistances.append( graphDistances[ getClosestVertex( objPos, fnMesh ) ] / maxDist )
-        #print objectDistances[i] 
     
-    growthSpeed = 3
+
     growthFrames = frameRange / growthSpeed
     
     mc.progressWindow(title = 'Animation Progress', progress = 0, status = 'Animating...', isInterruptable = True, max = len(objects))
@@ -262,11 +268,13 @@ def getAverageWeight(vertices):
     index1 = int(re.findall(r"[\w]+", vertices[0])[2])
     index2 = int(re.findall(r"[\w]+", vertices[1])[2])
     index3 = int(re.findall(r"[\w]+", vertices[2])[2])
-                
+    
     weights = mc.getAttr(baseMeshShape + '.growthWeights')
     return (weights[index1] + weights[index2] + weights[index3]) / 3.0
 
-def placeInstance(instanceName, position, size, faceNormal):
+def placeInstance(instanceName, position, size, face, randRotation, animatedParentGroup = None):
+    faceNormal = getNormal(face)
+    
     psi = mc.angleBetween(euler = True, v1 = (0.0, 1.0, 0.0),
                             v2 = (faceNormal.x, faceNormal.y, faceNormal.z))
         
@@ -274,40 +282,92 @@ def placeInstance(instanceName, position, size, faceNormal):
     
     mc.move( position.x, position.y, position.z, objectInstance )
     mc.rotate( psi[0], psi[1], psi[2], objectInstance )
+    if randRotation:
+        mc.rotate( 0, rand.uniform(-180, 180), 0, objectInstance, r = True, os = True )
     
     mc.scale( size, size, size, objectInstance )
-    mc.parent( objectInstance, 'Group' )
+    
+    if animatedParentGroup != None:
+        print animatedParentGroup
+        mc.pointOnPolyConstraint( face, animatedParentGroup, mo = False )
+        mc.parent( objectInstance, animatedParentGroup )
+        mc.parent( animatedParentGroup, groupName )
+    else:
+        mc.parent ( objectInstance, groupName )
 
-def calculateAndInstantiate(subMeshName, hitPoint, hitFace, direction):
+def calculateAndInstantiate(subMeshName, hitPoint, hitFace, direction, animatedParentGroup = None):
     selectedVerts = getTriangleFromHitpoint(hitPoint, hitFace)
                         
     averageWeight = getAverageWeight(selectedVerts)
-    faceNormal = getNormal(baseMeshName + '.f[' + str(hitFace) + ']')
+    face = baseMeshName + '.f[' + str(hitFace) + ']'
                         
     dotProduct = faceNormal[0] * direction[0] + faceNormal[1] * direction[1] + faceNormal[2] * direction[2]
                         
     if averageWeight > 0.05 and abs(dotProduct) > 0.6:
-        placeInstance(subMeshName, hitPoint, averageWeight, faceNormal )
+        placeInstance(subMeshName, hitPoint, averageWeight, face, animatedParentGroup )
+        
+def calculateFaceAreaArray( sampleArray ):
+    faces = mc.polyEvaluate( baseMeshName, f = True )
 
-def runProgram(subMeshNamesCtrl, useSphereCtrl, alongSurfaceCtrl, insideSphereCtrl, startFrameCtrl, endFrameCtrl, numberOfInstancesCtrl, animatedCtrl):
-    subMeshNames = re.split(' |\n', mc.scrollField(subMeshNamesCtrl, q = True, text = True))
-    #subMeshName = subMeshName[0]
-    useSphere = mc.radioButton (useSphereCtrl, q = True, sl = True )
-    alongSurface = mc.radioButton (alongSurfaceCtrl, q = True, sl = True )
-    insideSphere =  mc.radioButton(insideSphereCtrl, q = True, sl = True)
-    startFrame = mc.intField(startFrameCtrl, q = True, v = True)
-    endFrame = mc.intField(endFrameCtrl, q = True, v = True)
-    numberOfInstances = mc.intField(numberOfInstancesCtrl, q = True, v = True)
-    isAnimated = mc.checkBox( animatedCtrl, q = True, v = True )
+    sel = om.MSelectionList()
+    dag = om.MDagPath()
+    sel.add(baseMeshName)
+    sel.getDagPath(0, dag)
+    meshFn = om.MFnMesh(dag)
+    areas = []
+    minArea = 999999
 
-    frameRange = endFrame - startFrame + 1
-       
+    # Get positions of all vertices on the mesh
+    meshFn = om.MFnMesh(dag)
+    positions = om.MPointArray()
+    meshFn.getPoints(positions, om.MSpace.kWorld)
+    
+    for i in range( faces ):
+        indices = om.MIntArray()
+        meshFn.getPolygonVertices(i, indices)
+        area = 0
+        if len(indices) == 3:
+            AB = distance( positions[ indices[0] ], positions[ indices[1] ] )
+            BC = distance( positions[ indices[1] ], positions[ indices[2] ] )
+            AC = distance( positions[ indices[2] ], positions[ indices[0] ] )
+            s = (AB + BC + AC ) / 2.0
+            area += m.sqrt( s * (s - AB) * (s - BC) * (s - AC) )
+        else:
+            AB = distance( positions[ indices[0] ], positions[ indices[1] ] )
+            BC = distance( positions[ indices[1] ], positions[ indices[2] ] )
+            CD = distance( positions[ indices[2] ], positions[ indices[3] ] )
+            AD = distance( positions[ indices[3] ], positions[ indices[0] ] )
+            AC = distance( positions[ indices[0] ], positions[ indices[2] ] )
+            s = (AB + BC + AC ) / 2.0
+            area += m.sqrt( s * (s - AB) * (s - BC) * (s - AC) )
+            s = (AD + CD + AC ) / 2.0
+            area += m.sqrt( s * (s - AD) * (s - CD) * (s - AC) )
+        
+        areas.append(area)
+        if area < minArea:
+            minArea = area
+
+    for i in range( len(areas) ):
+        areas[i] = int(m.ceil( areas[i] / minArea * 0.6 ))
+        if areas[i] > 100:
+            areas[i] = 100
+        for j in range(areas[i]):
+            sampleArray.append(i)
+    
+
+def randomPopulation(subMeshNames, numberOfInstances, randomRotation):   
     numberOfFaces = mc.polyEvaluate( baseMeshName, f = True )
     vertList = mc.ls(baseMeshName + '.vtx[*]', fl = True)
+    sampleArray = []
+    calculateFaceAreaArray( sampleArray )
     
     mc.progressWindow(title = 'Progress', progress = 0, status = 'Populating...', isInterruptable = True, max = numberOfInstances)
     for i in range(numberOfInstances):
-        randomFace = rand.randint(0, numberOfFaces-1)
+        groupy  = None
+        if isBaseAnimated:
+            groupy = mc.group(em = True)
+        
+        randomFace = rand.choice( sampleArray )
         randomFace = baseMeshName + '.f[' + str(randomFace) + ']'
         mc.select(randomFace, r = True)
         
@@ -319,7 +379,7 @@ def runProgram(subMeshNamesCtrl, useSphereCtrl, alongSurfaceCtrl, insideSphereCt
         
         averageWeight = getAverageWeight(currentTriangle)
         while averageWeight < 0.05:
-            randomFace = rand.randint(0, numberOfFaces-1)
+            randomFace = rand.choice( sampleArray )
             randomFace = baseMeshName + '.f[' + str(randomFace) + ']'
             mc.select(randomFace, r = True)
         
@@ -347,69 +407,23 @@ def runProgram(subMeshNamesCtrl, useSphereCtrl, alongSurfaceCtrl, insideSphereCt
         randomPoint = v1 + ( v2 - v1) * a + ( v3 - v1 ) * b
         
         # Orient the object along the face normal with random rotation across the local Y axis
-        normal = getNormal(randomFace)
+        #normal = getNormal(randomFace)
         #front = v3 - v2
         #front.normalize()
         #side = front ^ normal #cross product
         
         #phi = mc.angleBetween(euler = True, v1 = (0.0, 0.0, 1.0), v2 = (side.x, side.y, side.z))
         #theta = mc.angleBetween(euler = True, v1 = (1.0, 0.0, 0.0), v2 = (front.x, front.y, front.z))
-        psi = mc.angleBetween(euler = True, v1 = (0.0, 1.0, 0.0), v2 = (normal.x, normal.y, normal.z))
         
-        objectInstance = mc.instance(rand.choice(subMeshNames))#rand.choice(subMeshNames))
-    
-        mc.move( randomPoint.x, randomPoint.y, randomPoint.z, objectInstance )
-        mc.rotate( psi[0], psi[1], psi[2], objectInstance )
-    
-        mc.scale( averageWeight, averageWeight, averageWeight, objectInstance )
         
-        #mc.select(objectInstance)
-
-        hasRig = False
-        if hasRig: 
-            skinWeights = mc.skinPercent(baseMeshSkin, currentTriangle, ignoreBelow=0.01, q = True, t = None)
-            averageSkinWeights = {}
-            for bone in skinWeights:
-                averageSkinWeights[bone] = mc.skinPercent(baseMeshSkin, currentTriangle, t = bone, q = True)
-            mc.select( rigName )
-            mc.joint(p = (0, 0, 0), n = '_GhostJoint')
-                
-            newCluster = mc.skinCluster(rigName, objectInstance)[0]
-            mc.skinPercent( newCluster, objectInstance, transformValue = [ ( '_GhostJoint', 1.0 ) ], nrm = True )
-            mc.skinPercent( newCluster, objectInstance, pruneWeights = 0.99, nrm = False)
-
-            for bone in averageSkinWeights:
-                mc.skinPercent( newCluster, objectInstance, transformValue = [ bone, averageSkinWeights[bone] ], nrm = False )
-            mc.skinPercent( newCluster, objectInstance, transformValue = [ ( '_GhostJoint', 0 ) ], nrm = False )
-            mc.delete( '_GhostJoint' )
-            
-        constraint = True
-        if constraint:
-            mc.pointOnPolyConstraint( currentTriangle, objectInstance, mo = True )
-
-        mc.parent( objectInstance, 'Group' )
+        #objectInstance = mc.instance(rand.choice(subMeshNames))
+        placeInstance(rand.choice(subMeshNames), randomPoint, averageWeight, randomFace, randomRotation, groupy)
         
         if mc.progressWindow (q = True, isCancelled = True):
             break
         mc.progressWindow(edit = True, step = 1)
 
     mc.progressWindow(endProgress = 1)
-    submeshes = mc.listRelatives('Group', c = True)
-    
-    #objs = mc.ls( sl=True )
-    #axis = ['x', 'y', 'z']
-    #attrs = ['t', 'r', 's']
-    #for ax in axis:
-        #for attr in attrs:
-            #for obj in submeshes:
-        		     #mc.setAttr(obj+'.'+ attr + ax, lock = 0)
-    
-    if useSphere == True:
-        populateWithSphere(startFrame, frameRange, submeshes, insideSphere)
-    elif alongSurface == True:
-        populateAlongSurface( submeshes, insideSphere, startFrame, frameRange )
-    else:
-        populateNoSphere(startFrame, endFrame, submeshes)
 
 
 def getTriangleFromHitpoint(hitPoint, faceID):
@@ -428,7 +442,7 @@ def getTriangleFromHitpoint(hitPoint, faceID):
         del selectedVerts[distID]
     return selectedVerts
 
-def projectPlane(originX, originY, originDepth, width, height, dir, subMeshNames, cellWidth, cellHeight, onlyOuterProjection, pWindow):
+def projectPlane(originX, originY, originDepth, width, height, dir, subMeshNames, cellWidth, cellHeight, onlyOuterProjection, pWindow, randRotation):
     point = [0, 0, 0]
     dirVector = om.MFloatVector(*dir)
     
@@ -468,31 +482,16 @@ def projectPlane(originX, originY, originDepth, width, height, dir, subMeshNames
                         #hitFaces[hitPoints.length()-1], dir)
             #else:
             for z in range(hitPoints.length()):
-                calculateAndInstantiate(rand.choice(subMeshNames), hitPoints[z], hitFaces[z], dir)
+                if isBaseAnimated:
+                    calculateAndInstantiate(rand.choice(subMeshNames), hitPoints[z], hitFaces[z], dir, mc.group(em = True), randRotation)
+                else:
+                    calculateAndInstantiate(rand.choice(subMeshNames), hitPoints[z], hitFaces[z], dir, None, randRotation)
             if mc.progressWindow (pWindow, q = True, isCancelled = True):
                 break
 
             mc.progressWindow(pWindow, edit = True, status= ('Populating mesh...'), step = 1)
 
-def alignedPopulation(subMeshNamesCtrl, useSphereCtrl, alongSurfaceCtrl, insideSphereCtrl, startFrameCtrl, endFrameCtrl, widthCtrl, heightCtrl, depthCtrl, animatedCtrl):
-    subMeshNames = re.split(' |\n', mc.scrollField(subMeshNamesCtrl, q = True, text = True))
-    #subMeshName = subMeshName[0]
-    useSphere = mc.radioButton (useSphereCtrl, q = True, sl = True )
-    alongSurface = mc.radioButton (alongSurfaceCtrl, q = True, sl = True )
-    insideSphere =  mc.radioButton(insideSphereCtrl, q = True, sl = True)
-    startFrame = mc.intField(startFrameCtrl, q = True, v = True)
-    endFrame = mc.intField(endFrameCtrl, q = True, v = True)
-    width = mc.intField( widthCtrl, q = True, v = True )
-    height = mc.intField( heightCtrl, q = True, v = True )
-    depth = mc.intField( depthCtrl, q = True, v = True )
-    
-    frameRange = endFrame - startFrame + 1
-    
-    if mc.objExists('Group') == True:
-        mc.delete('Group')
-    
-    mc.group(em = True, name = 'Group')
-    
+def alignedPopulation(subMeshNames, width, height, depth, randRotation):
     bbox = mc.exactWorldBoundingBox(baseMeshName)
     
     planeOriginX = bbox[0]
@@ -513,42 +512,25 @@ def alignedPopulation(subMeshNamesCtrl, useSphereCtrl, alongSurfaceCtrl, insideS
     totalRayCasts = (width + 1) * (height + 1) + (width + 1) * (depth + 1) + (height + 1) * (depth + 1)
     
     progrWindow = mc.progressWindow(title = 'Progress', progress = 0, status = 'Populating mesh...', isInterruptable = True, max = totalRayCasts)
-    #print totalRayCasts
     
     projectPlane(planeOriginX, planeOriginY, planeEndZ,
                 planeEndX, planeEndY, [0, 0, -1], subMeshNames, cellWidth,
-                cellHeight, False, progrWindow)
+                cellHeight, False, progrWindow, randRotation)
     
     projectPlane(planeOriginZ, planeOriginY, planeEndX,
                 planeEndZ, planeEndY, [-1, 0, 0], subMeshNames, cellDepth,
-                cellHeight, False, progrWindow)
+                cellHeight, False, progrWindow, randRotation)
                 
     projectPlane(planeOriginX, planeOriginZ, planeEndY,
                 planeEndX, planeEndZ, [0, -1, 0], subMeshNames, cellWidth,
-                cellDepth, False, progrWindow)
+                cellDepth, False, progrWindow, randRotation)
     mc.progressWindow(endProgress = 1)
-    
-    submeshes = mc.listRelatives('Group', c = True)      
-    if useSphere == True:
-        populateWithSphere(startFrame, frameRange, submeshes, insideSphere)
-    elif alongSurface == True:
-        populateAlongSurface( submeshes, insideSphere, startFrame, frameRange )
-    else:
-        populateNoSphere(startFrame, endFrame, submeshes)
    
-def evenPopulation(subMeshNamesCtrl, useSphereCtrl, alongSurfaceCtrl, insideSphereCtrl, startFrameCtrl, endFrameCtrl, numberOfInstancesCtrl, animatedCtrl):
-    
-    subMeshNames = re.split(' |\n', mc.scrollField(subMeshNamesCtrl, q = True, text = True))
-    useSphere = mc.radioButton (useSphereCtrl, q = True, sl = True )
-    alongSurface = mc.radioButton (alongSurfaceCtrl, q = True, sl = True )
-    insideSphere =  mc.radioButton(insideSphereCtrl, q = True, sl = True)
-    startFrame = mc.intField(startFrameCtrl, q = True, v = True)
-    endFrame = mc.intField(endFrameCtrl, q = True, v = True)
-    numberOfInstances = mc.intField(numberOfInstancesCtrl, q = True, v = True)
-    
-    frameRange = endFrame - startFrame + 1
-    #g.printGraph()
+def evenPopulation(subMeshNames, numberOfInstances, randRotation):
     graph = g.getVertices()
+    sampleList = []
+    calculateFaceAreaArray( sampleList )
+    
     numberOfVerts = mc.polyEvaluate( baseMeshName, v = True )
     startingVertex = rand.randrange(0, numberOfVerts)
     while mc.getAttr(baseMeshShape + '.growthWeights')[startingVertex] < 0.05:
@@ -563,7 +545,7 @@ def evenPopulation(subMeshNamesCtrl, useSphereCtrl, alongSurfaceCtrl, insideSphe
     sel.getDagPath(0, dag)
     mesh = om.MFnMesh(dag)
     
-    sampleMultiplier = 0.8
+    sampleMultiplier = 0.7
     dir = om.MVector()
     numberOfFaces = mc.polyEvaluate( baseMeshName, f = True )
     vertList = mc.ls(baseMeshName + '.vtx[*]', fl = True)
@@ -577,8 +559,12 @@ def evenPopulation(subMeshNamesCtrl, useSphereCtrl, alongSurfaceCtrl, insideSphe
         bestWeight = 0
         bestPos = []
         bestFace = None
+        
+        animatedGroup = None
+        if isBaseAnimated:
+            animatedGroup = mc.group(em = True)
         for k in range(int(numberOfCandidates)):
-            randomFace = rand.randint(0, numberOfFaces-1)
+            randomFace = rand.choice(sampleList)
             randomFace = baseMeshName + '.f[' + str(randomFace) + ']'
             mc.select(randomFace, r = True)
             
@@ -590,7 +576,7 @@ def evenPopulation(subMeshNamesCtrl, useSphereCtrl, alongSurfaceCtrl, insideSphe
             
             averageWeight = getAverageWeight(currentTriangle)
             while averageWeight < 0.05:
-                randomFace = rand.randint(0, numberOfFaces-1)
+                randomFace = rand.choice(sampleList)
                 randomFace = baseMeshName + '.f[' + str(randomFace) + ']'
                 mc.select(randomFace, r = True)
             
@@ -654,29 +640,20 @@ def evenPopulation(subMeshNamesCtrl, useSphereCtrl, alongSurfaceCtrl, insideSphe
         usedVertices.append(bestID)
             
         #mesh.getVertexNormal(bestID, False, dir, om.MSpace.kWorld)
-        dir = getNormal(bestFace)
-        placeInstance(rand.choice(subMeshNames), bestPos, bestWeight, dir)
+        #dir = getNormal(bestFace)
+        placeInstance(rand.choice(subMeshNames), bestPos, bestWeight, bestFace, randRotation, animatedGroup)
         if mc.progressWindow (q = True, isCancelled = True):
             break
         mc.progressWindow(edit = True, step = 1)
 
     mc.progressWindow(endProgress = 1)
-        
-    submeshes = mc.listRelatives('Group', c = True)   
-    if useSphere == True:
-        populateWithSphere(startFrame, frameRange, submeshes, insideSphere)
-    elif alongSurface == True:
-        populateAlongSurface( submeshes, insideSphere, startFrame, frameRange)
-    else:
-        populateNoSphere(startFrame, endFrame, submeshes)
     
 def prepareBaseMesh():
-    #Don't forget to fix Shape bug
-    #mc.select(str(baseMeshName) + 'Shape', r = True)
     if mc.attributeQuery('growthWeights', node = baseMeshShape, exists = True) == False:
         mc.addAttr(baseMeshShape, ln = 'growthWeights', nn = 'GrowthWeights', dt = 'doubleArray')
         
-    mc.makePaintable('mesh', 'growthWeights', at = 'doubleArray')
+        #mc.deleteAttr(baseMeshShape + '.growthWeights')
+        mc.makePaintable('mesh', 'growthWeights', at = 'doubleArray')
     
     if mc.objExists(controlSphereName) == False:
         mc.polySphere(n = controlSphereName, r = 1)
@@ -715,10 +692,9 @@ def prepareBaseMesh():
                 g.addVertex(neighbourID)
                 g.addEdge(curVertexID, neighbourID, squareDistance( positions[curVertexID], positions[neighbourID] ))
         iter.next()
-    #g.printGraph()
         
 def populateGenerateAnimate( alignmentTypeCtrl, randomCtrl, alignedCtrl, evenCtrl, subMeshNamesCtrl, useSphereCtrl, alongSurfaceCtrl, insideSphereCtrl, startFrameCtrl,
-                            endFrameCtrl, numberOfInstancesCtrl, widthCtrl, heightCtrl, depthCtrl, animatedCtrl, rigNameCtrl, *pArgs ):
+                            endFrameCtrl, numberOfInstancesCtrl, widthCtrl, heightCtrl, depthCtrl, animatedCtrl, speedCtrl, randRotCtrl, *pArgs ):
     alignmentType = mc.radioCollection(alignmentTypeCtrl, q = True, sl = True)
     
     randomCtrl = randomCtrl.split("|")
@@ -727,18 +703,43 @@ def populateGenerateAnimate( alignmentTypeCtrl, randomCtrl, alignedCtrl, evenCtr
     alignedCtrl = alignedCtrl[ len(alignedCtrl)-1 ]
     evenCtrl = evenCtrl.split("|")
     evenCtrl = evenCtrl[ len(evenCtrl)-1 ]
-    if mc.objExists('Group') == True:
-        mc.delete('Group')
+    speed = mc.floatField( speedCtrl, q = True, v = True )
     
-    mc.group(em = True, name = 'Group')
-    rigName = mc.textField ( rigNameCtrl, q = True, tx = True )
+    subMeshNames = re.split(' |\n', mc.scrollField(subMeshNamesCtrl, q = True, text = True))
+    useSphere = mc.radioButton (useSphereCtrl, q = True, sl = True )
+    alongSurface = mc.radioButton (alongSurfaceCtrl, q = True, sl = True )
+    insideSphere =  mc.radioButton(insideSphereCtrl, q = True, sl = True)
+    startFrame = mc.intField(startFrameCtrl, q = True, v = True)
+    endFrame = mc.intField(endFrameCtrl, q = True, v = True)
+    numberOfInstances = mc.intField(numberOfInstancesCtrl, q = True, v = True)
+    width = mc.intField( widthCtrl, q = True, v = True )
+    height = mc.intField( heightCtrl, q = True, v = True )
+    depth = mc.intField( depthCtrl, q = True, v = True )
+    randRotation = mc.checkBox( randRotCtrl, q = True, v = True )
+
+    frameRange = endFrame - startFrame + 1
+    
+    global isBaseAnimated
+    isBaseAnimated = mc.checkBox( animatedCtrl, q = True, v = True )
+    if mc.objExists(groupName) == True:
+        mc.delete(groupName)
+    
+    mc.group(em = True, name = groupName)
 
     if alignmentType == randomCtrl:
-        runProgram(subMeshNamesCtrl, useSphereCtrl, alongSurfaceCtrl, insideSphereCtrl, startFrameCtrl, endFrameCtrl, numberOfInstancesCtrl, animatedCtrl)
+        randomPopulation(subMeshNames, numberOfInstances, randRotation)#calculateFaceAreaArray()
     elif alignmentType == alignedCtrl:
-        alignedPopulation(subMeshNamesCtrl, useSphereCtrl, alongSurfaceCtrl, insideSphereCtrl, startFrameCtrl, endFrameCtrl, widthCtrl, heightCtrl, depthCtrl, animatedCtrl)
+        alignedPopulation(subMeshNames, width, height, depth, randRotation)
     elif alignmentType == evenCtrl:
-        evenPopulation(subMeshNamesCtrl, useSphereCtrl, alongSurfaceCtrl, insideSphereCtrl, startFrameCtrl, endFrameCtrl, numberOfInstancesCtrl, animatedCtrl)
+        evenPopulation(subMeshNames, numberOfInstances, randRotation)
+        
+    submeshes = mc.listRelatives(groupName, c = True)      
+    if useSphere == True:
+        populateWithSphere(startFrame, frameRange, submeshes, insideSphere)
+    elif alongSurface == True:
+        populateAlongSurface( submeshes, insideSphere, startFrame, frameRange, speed )
+    else:
+        populateNoSphere(startFrame, endFrame, submeshes)
 
 def switchRandomAlignmentSettings( numberText, numberCtrl, *pArgs ):
     visibility = mc.text( numberText, q = True, enable = True )
@@ -757,20 +758,24 @@ def switchAlignedAlignmentSettings( widthText, widthCtrl, heightText, heightCtrl
     mc.intField( depthCtrl, e = True, enable = not visibility )
 
 def switchInfluenceTypeSettings ( textCtrl, insideCtrl, outsideCtrl, *pArgs ):
-    visibility = mc.text( textCtrl, q = True, enable = True )
+    visibility = mc.text( textCtrl, q = True, vis = True )
     
-    mc.text( textCtrl, e = True, enable = not visibility )
-    mc.radioButton( insideCtrl, e = True, enable = not visibility )
-    mc.radioButton( outsideCtrl, e = True, enable = not visibility )
+    mc.text( textCtrl, e = True, vis = not visibility )
+    mc.radioButton( insideCtrl, e = True, vis = not visibility )
+    mc.radioButton( outsideCtrl, e = True, vis = not visibility )
     
 def changeInfluenceTypeLabels( insideCtrl, outsideCtrl, label1, label2, *pArgs ):
     mc.radioButton( insideCtrl, e = True, label = label1 )
     mc.radioButton( outsideCtrl, e = True, label = label2 )
     
-def switchRigSettings( checkbox, rigText, rigNameCtrl, *pArgs ):
-    visibility = mc.checkBox( checkbox, q = True, v = True )
-    mc.text( rigText, e = True, enable = visibility )
-    mc.textField ( rigNameCtrl, e = True, enable = visibility )
+def changeInfluenceTypeLabelsForAlongSurface( insideCtrl, outsideCtrl, label1, label2, speedText, speed, *pArgs ):
+    mc.radioButton( insideCtrl, e = True, label = label1 )
+    mc.radioButton( outsideCtrl, e = True, label = label2 )
+    
+    vis = mc.text( speedText, q = True, vis = True )
+    mc.text( speedText, e = True, m = not vis )
+    mc.floatField( speed, e = True, m = not vis )
+      
       
 #GUI
 def createUI():
@@ -781,11 +786,19 @@ def createUI():
     
     winControl = mc.window(windowID, title = 'Growth Control', w = 100)
     
+    
     mc.columnLayout(columnAttach=('both', 5), rowSpacing = 7, columnWidth = 10, adjustableColumn=True)
+    
+    mc.rowLayout(nc = 3, cat = [ (1, 'both', 1), (2, 'both', 10), (3, 'both', 1) ], adjustableColumn = 2)
+    mc.separator()
+    scriptPath = os.environ['MAYA_SCRIPT_PATH'].split(";")[0]
+    mc.image( image = scriptPath + '/thumbnail.png', h = 150)
+    mc.separator()
+    mc.setParent('..')
+    
     mc.separator()
     mc.text( label = "Submeshes Names" )
-    #submeshNames = mc.textScrollList(dgc = ft.partial(addSubmesh))
-    submeshNamesCtrl = mc.scrollField(editable = True, wordWrap = True, text = "Mushroom", h = 100)
+    submeshNamesCtrl = mc.scrollField(editable = True, wordWrap = True, text = "MeshName", h = 100)
     mc.separator(style = 'in')
     
     mc.text( label = "Distribution Type" )
@@ -798,6 +811,13 @@ def createUI():
     mc.setParent( '..' )
     mc.separator(style = 'in')
     
+    mc.rowLayout(nc = 3, cat = [ (1, 'both', 1), (2, 'both', 10), (3, 'both', 1) ])
+    mc.separator()
+    randRotCtrl = mc.checkBox( l = 'Random Yaw Rotation', v = True)
+    mc.separator()
+    mc.setParent('..')
+    mc.separator(style = 'in')
+    
     mc.rowLayout(nc = 2, cat = [ (1, 'left', 5), (2, 'both', 5) ], adjustableColumn = 2)
     numberText = mc.text( "Number of instances" )
     numberCtrl = mc.intField(v = 100, w = 1)
@@ -806,23 +826,23 @@ def createUI():
     
     mc.rowLayout(nc = 2, cat = [ (1, 'left', 5), (2, 'both', 5) ], adjustableColumn = 2)
     widthText = mc.text( "Instances along X-axis", enable = False )
-    widthCtrl = mc.intField(v = 22, w = 1, min = 1, max = 100, step = 1, enable = False)
+    widthCtrl = mc.intField(v = 20, w = 1, min = 1, max = 100, step = 1, enable = False)
     mc.setParent( '..' )
     mc.rowLayout(nc = 2, cat = [ (1, 'left', 5), (2, 'both', 5) ], adjustableColumn = 2)
     heightText = mc.text( "Instances along Y-axis", enable = False )
-    heightCtrl = mc.intField(v = 35, w = 1, min = 1, max = 100, step = 1, enable = False)
+    heightCtrl = mc.intField(v = 20, w = 1, min = 1, max = 100, step = 1, enable = False)
     mc.setParent( '..' )
     mc.rowLayout(nc = 2, cat = [ (1, 'left', 5), (2, 'both', 5) ], adjustableColumn = 2)
     depthText = mc.text( "Instances along Z-axis", enable = False )
-    depthCtrl = mc.intField(v = 12, w = 1, min = 1, max = 100, step = 1, enable = False)
+    depthCtrl = mc.intField(v = 20, w = 1, min = 1, max = 100, step = 1, enable = False)
     mc.setParent( '..' )
     mc.separator(style = 'in')
     
-    animatedCtrl = mc.checkBox( l = 'Is the mesh animated by a rig?', v = True, al = 'center' )
-    mc.rowLayout(nc = 2, cat = [ (1, 'left', 5), (2, 'both', 5) ], adjustableColumn = 2)
-    rigText = mc.text( "Root Name" )
-    rigNameCtrl = mc.textField(tx = "mixamorig:Hips")
-    mc.setParent( '..' )
+    mc.rowLayout(nc = 3, cat = [ (1, 'both', 1), (2, 'both', 10), (3, 'both', 1) ], adjustableColumn = 2)
+    mc.separator()
+    animatedCtrl = mc.checkBox( l = 'Animated Base Mesh', v = False)
+    mc.separator()
+    mc.setParent('..')
     mc.separator(style = 'in')
     
     mc.text( label = "Growth Animation Type" )
@@ -840,13 +860,16 @@ def createUI():
     insideCtrl = mc.radioButton(label = 'Inside Sphere', align = 'center', sl = True)
     outsideCtrl = mc.radioButton(label = 'Outside Sphere', align = 'center')
     mc.setParent( '..' )
-    mc.separator(style = 'in')
-    mc.shelfLayout('Lol')
+    
+    mc.rowLayout(nc = 2, cat = [ (1, 'left', 5), (2, 'both', 5) ], adjustableColumn = 2)
+    speedTextCtrl = mc.text( label = 'Submesh growth speed', vis = False )
+    speedCtrl = mc.floatField(v = 4, vis = False)
     mc.setParent( '..' )
+    mc.separator(style = 'in')
     
     mc.rowLayout(nc = 5, adjustableColumn5 = 3, cat = [ (1, 'left', 1), (2, 'left', 2), (3, 'both', 5), (4, 'right', 2), (5, 'right', 1) ])
     mc.text( label = "Start Frame" )
-    startFrameCtrl = mc.intField(w = 60, v = 1, min = 0)
+    startFrameCtrl = mc.intField(w = 60, v = 1)
     mc.separator(w = 5)
     mc.text ( label = "End Frame" )
     endFrameCtrl = mc.intField(w = 60, v = 50)
@@ -857,13 +880,12 @@ def createUI():
     mc.radioButton( alignedCtrl, e = True, cc = ft.partial( switchAlignedAlignmentSettings, widthText, widthCtrl, heightText, heightCtrl, depthText, depthCtrl ) )
     mc.radioButton( evenCtrl, e = True, cc = ft.partial( switchRandomAlignmentSettings, numberText, numberCtrl ) )
     mc.radioButton( uniformCtrl, e = True, cc = ft.partial( switchInfluenceTypeSettings, influenceTextCtrl, insideCtrl, outsideCtrl) )
-    mc.radioButton( useSphereCtrl, e = True, cc = ft.partial( changeInfluenceTypeLabels, insideCtrl, outsideCtrl, 'Inside Sphere', 'Outside Sphere') )
-    mc.radioButton( alongSurfaceCtrl, e = True, cc = ft.partial( changeInfluenceTypeLabels, insideCtrl, outsideCtrl, 'Inwards Towards Sphere', 'Outwards From Sphere') )
-    mc.checkBox ( animatedCtrl, e = True, cc = ft.partial ( switchRigSettings, animatedCtrl, rigText, rigNameCtrl ) )
+    mc.radioButton( useSphereCtrl, e = True, cc = ft.partial( changeInfluenceTypeLabels, insideCtrl, outsideCtrl, 'Inside Sphere', 'Outside Sphere'))
+    mc.radioButton( alongSurfaceCtrl, e = True, cc = ft.partial( changeInfluenceTypeLabelsForAlongSurface, insideCtrl, outsideCtrl, 'Inwards Towards Sphere', 'Outwards From Sphere', speedTextCtrl, speedCtrl ) )
     
     mc.button( label = "Generate, populate and animate!",
         command = ft.partial( populateGenerateAnimate, alignmentTypeCtrl, randomCtrl, alignedCtrl, evenCtrl, submeshNamesCtrl, useSphereCtrl, alongSurfaceCtrl, insideCtrl,
-        startFrameCtrl, endFrameCtrl, numberCtrl, widthCtrl, heightCtrl, depthCtrl, animatedCtrl, rigNameCtrl ))
+        startFrameCtrl, endFrameCtrl, numberCtrl, widthCtrl, heightCtrl, depthCtrl, animatedCtrl, speedCtrl, randRotCtrl))
 
     mc.separator(style = 'in')
     
@@ -874,23 +896,18 @@ if __name__ == "__main__":
     baseMeshName = mc.ls(sl = True)
     baseMeshName = baseMeshName[0]
     baseMeshShape = mc.listRelatives( shapes = True )[0]
-    
-    baseMeshSkin = None
-    #if mc.objExists(baseMeshName + '.skinCluster1'):
-    baseMeshSkin = mc.ls( type = ['skinCluster'])[0]
-    print baseMeshSkin
-    
-    rigName = 'mixamorig:Hips'
+    print baseMeshName
+    print baseMeshShape
     
     groupName = '_PopulationGroup'
     
     controlSphereName = '_ControlSphere'
     
+    isBaseAnimated = False
+    
     g = Graph( mc.polyEvaluate( v = True ) )
     createUI()
     prepareBaseMesh()
-    
-    #print ( distances )
         
 
 
