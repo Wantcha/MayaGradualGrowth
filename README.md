@@ -5,6 +5,7 @@ Animated mesh population in Maya is now at the tip of your fingers!
 
 
 ## How to run and use the script
+Make sure to set the workspace of your project somewhere. Drag the contents of the "script" folder from this repository into the "scripts" folder of your project. Then, you can open it in Maya.
 
 Select the mesh you wish to grow things on and run this script.
 
