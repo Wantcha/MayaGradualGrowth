@@ -288,7 +288,6 @@ def placeInstance(instanceName, position, size, face, randRotation, animatedPare
     mc.scale( size, size, size, objectInstance )
     
     if animatedParentGroup != None:
-        #print animatedParentGroup
         mc.pointOnPolyConstraint( face, animatedParentGroup, mo = False )
         mc.parent( objectInstance, animatedParentGroup )
         mc.parent( animatedParentGroup, groupName )
@@ -391,12 +390,11 @@ def randomPopulation(subMeshNames, numberOfInstances, randomRotation):
             currentTriangle = rand.sample(selectedVerts, 3)
         
             averageWeight = getAverageWeight(currentTriangle)
-        
         # Get random point within this face
         # https://math.stackexchange.com/questions/538458/triangle-point-picking-in-3d
-        v1 = MVector(*mc.pointPosition(currentTriangle[0]))
-        v2 = MVector(*mc.pointPosition(currentTriangle[1]))
-        v3 = MVector(*mc.pointPosition(currentTriangle[2]))
+        v1 = MVector(*mc.pointPosition(currentTriangle[0], w = True))
+        v2 = MVector(*mc.pointPosition(currentTriangle[1], w = True))
+        v3 = MVector(*mc.pointPosition(currentTriangle[2], w = True))
         
         a = rand.random()
         b = rand.random()
@@ -406,9 +404,7 @@ def randomPopulation(subMeshNames, numberOfInstances, randomRotation):
             b = 1-b
             
         randomPoint = v1 + ( v2 - v1) * a + ( v3 - v1 ) * b
-        print randomPoint[0], randomPoint[1], randomPoint[2]
         
-        #objectInstance = mc.instance(rand.choice(subMeshNames))
         placeInstance(rand.choice(subMeshNames), randomPoint, averageWeight, randomFace, randomRotation, groupy)
         
         if mc.progressWindow (q = True, isCancelled = True):
