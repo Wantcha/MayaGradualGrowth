@@ -280,7 +280,7 @@ def placeInstance(instanceName, position, size, face, randRotation, animatedPare
         
     objectInstance = mc.instance(instanceName)
     
-    mc.move( position.x, position.y, position.z, objectInstance )
+    mc.move( position[0], position[1], position[2], objectInstance )
     mc.rotate( psi[0], psi[1], psi[2], objectInstance )
     if randRotation:
         mc.rotate( 0, rand.uniform(-180, 180), 0, objectInstance, r = True, os = True )
@@ -288,23 +288,24 @@ def placeInstance(instanceName, position, size, face, randRotation, animatedPare
     mc.scale( size, size, size, objectInstance )
     
     if animatedParentGroup != None:
-        print animatedParentGroup
+        #print animatedParentGroup
         mc.pointOnPolyConstraint( face, animatedParentGroup, mo = False )
         mc.parent( objectInstance, animatedParentGroup )
         mc.parent( animatedParentGroup, groupName )
     else:
         mc.parent ( objectInstance, groupName )
 
-def calculateAndInstantiate(subMeshName, hitPoint, hitFace, direction, animatedParentGroup = None):
+def calculateAndInstantiate(subMeshName, hitPoint, hitFace, direction, randRotation, animatedParentGroup = None):
     selectedVerts = getTriangleFromHitpoint(hitPoint, hitFace)
                         
     averageWeight = getAverageWeight(selectedVerts)
     face = baseMeshName + '.f[' + str(hitFace) + ']'
+    faceNormal = getNormal(face)
                         
     dotProduct = faceNormal[0] * direction[0] + faceNormal[1] * direction[1] + faceNormal[2] * direction[2]
                         
     if averageWeight > 0.05 and abs(dotProduct) > 0.6:
-        placeInstance(subMeshName, hitPoint, averageWeight, face, animatedParentGroup )
+        placeInstance(subMeshName, hitPoint, averageWeight, face, randRotation, animatedParentGroup )
         
 def calculateFaceAreaArray( sampleArray ):
     faces = mc.polyEvaluate( baseMeshName, f = True )
@@ -405,16 +406,7 @@ def randomPopulation(subMeshNames, numberOfInstances, randomRotation):
             b = 1-b
             
         randomPoint = v1 + ( v2 - v1) * a + ( v3 - v1 ) * b
-        
-        # Orient the object along the face normal with random rotation across the local Y axis
-        #normal = getNormal(randomFace)
-        #front = v3 - v2
-        #front.normalize()
-        #side = front ^ normal #cross product
-        
-        #phi = mc.angleBetween(euler = True, v1 = (0.0, 0.0, 1.0), v2 = (side.x, side.y, side.z))
-        #theta = mc.angleBetween(euler = True, v1 = (1.0, 0.0, 0.0), v2 = (front.x, front.y, front.z))
-        
+        print randomPoint[0], randomPoint[1], randomPoint[2]
         
         #objectInstance = mc.instance(rand.choice(subMeshNames))
         placeInstance(rand.choice(subMeshNames), randomPoint, averageWeight, randomFace, randomRotation, groupy)
@@ -483,9 +475,9 @@ def projectPlane(originX, originY, originDepth, width, height, dir, subMeshNames
             #else:
             for z in range(hitPoints.length()):
                 if isBaseAnimated:
-                    calculateAndInstantiate(rand.choice(subMeshNames), hitPoints[z], hitFaces[z], dir, mc.group(em = True), randRotation)
+                    calculateAndInstantiate(rand.choice(subMeshNames), hitPoints[z], hitFaces[z], dir, randRotation, mc.group(em = True))
                 else:
-                    calculateAndInstantiate(rand.choice(subMeshNames), hitPoints[z], hitFaces[z], dir, None, randRotation)
+                    calculateAndInstantiate(rand.choice(subMeshNames), hitPoints[z], hitFaces[z], dir, randRotation, None, randRotation)
             if mc.progressWindow (pWindow, q = True, isCancelled = True):
                 break
 
@@ -734,12 +726,12 @@ def populateGenerateAnimate( alignmentTypeCtrl, randomCtrl, alignedCtrl, evenCtr
         evenPopulation(subMeshNames, numberOfInstances, randRotation)
         
     submeshes = mc.listRelatives(groupName, c = True)      
-    if useSphere == True:
-        populateWithSphere(startFrame, frameRange, submeshes, insideSphere)
-    elif alongSurface == True:
-        populateAlongSurface( submeshes, insideSphere, startFrame, frameRange, speed )
-    else:
-        populateNoSphere(startFrame, endFrame, submeshes)
+    #if useSphere == True:
+        #populateWithSphere(startFrame, frameRange, submeshes, insideSphere)
+    #elif alongSurface == True:
+        #populateAlongSurface( submeshes, insideSphere, startFrame, frameRange, speed )
+    #else:
+        #populateNoSphere(startFrame, endFrame, submeshes)
 
 def switchRandomAlignmentSettings( numberText, numberCtrl, *pArgs ):
     visibility = mc.text( numberText, q = True, enable = True )
@@ -896,8 +888,8 @@ if __name__ == "__main__":
     baseMeshName = mc.ls(sl = True)
     baseMeshName = baseMeshName[0]
     baseMeshShape = mc.listRelatives( shapes = True )[0]
-    print baseMeshName
-    print baseMeshShape
+    #print baseMeshName
+    #print baseMeshShape
     
     groupName = '_PopulationGroup'
     
