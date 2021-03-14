@@ -640,8 +640,7 @@ def prepareBaseMesh():
     if mc.attributeQuery('growthWeights', node = baseMeshShape, exists = True) == False:
         mc.addAttr(baseMeshShape, ln = 'growthWeights', nn = 'GrowthWeights', dt = 'doubleArray')
         
-        #mc.deleteAttr(baseMeshShape + '.growthWeights')
-        mc.makePaintable('mesh', 'growthWeights', at = 'doubleArray')
+    mc.makePaintable('mesh', 'growthWeights', at = 'doubleArray')
     
     if mc.objExists(controlSphereName) == False:
         mc.polySphere(n = controlSphereName, r = 1)
@@ -722,12 +721,12 @@ def populateGenerateAnimate( alignmentTypeCtrl, randomCtrl, alignedCtrl, evenCtr
         evenPopulation(subMeshNames, numberOfInstances, randRotation)
         
     submeshes = mc.listRelatives(groupName, c = True)      
-    #if useSphere == True:
-        #populateWithSphere(startFrame, frameRange, submeshes, insideSphere)
-    #elif alongSurface == True:
-        #populateAlongSurface( submeshes, insideSphere, startFrame, frameRange, speed )
-    #else:
-        #populateNoSphere(startFrame, endFrame, submeshes)
+    if useSphere == True:
+        populateWithSphere(startFrame, frameRange, submeshes, insideSphere)
+    elif alongSurface == True:
+        populateAlongSurface( submeshes, insideSphere, startFrame, frameRange, speed )
+    else:
+        populateNoSphere(startFrame, endFrame, submeshes)
 
 def switchRandomAlignmentSettings( numberText, numberCtrl, *pArgs ):
     visibility = mc.text( numberText, q = True, enable = True )
@@ -763,7 +762,6 @@ def changeInfluenceTypeLabelsForAlongSurface( insideCtrl, outsideCtrl, label1, l
     vis = mc.text( speedText, q = True, vis = True )
     mc.text( speedText, e = True, m = not vis )
     mc.floatField( speed, e = True, m = not vis )
-      
       
 #GUI
 def createUI():
