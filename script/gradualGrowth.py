@@ -1,3 +1,10 @@
+for name in dir():
+    if not name.startswith('_'):
+        try:
+            del globals()[name]
+        except:
+            pass
+
 import maya.cmds as mc
 import random as rand
 import math as m
@@ -8,7 +15,20 @@ import re
 import heapq
 import os
 
+'''
+This is a tool meant to produce a gradual animated growth effect of smaller submeshes onto a bigger base mesh.
+The interface and script provide the user with various ways to customize the look and placement of the growth effect, including
+the ability to paint the influence of the growth, adjusting the parameters of the animation, or using a Control Sphere object to
+visually specify how the effect should act.
+'''
+
 def calculate_distances(graph, starting_vertex):
+    ''' Dijkstra pathfinding algorithm applied to mesh vertices.
+    
+        - graph: the graph constructed from the base mesh's vertices
+        - starting_vertex: ID of the vertex we calculate the distances from '''
+    
+    
     distances = [999999] * len( graph )
     distances[starting_vertex] = 0
 
@@ -34,12 +54,13 @@ def calculate_distances(graph, starting_vertex):
     
 
 class Graph():
+    '''
+    Graph data structure meant to retain information about a mesh.
+    '''
+
     def __init__(self, size):
         self.vertexArray = [None] * size
         self.numVertices = 0
-        
-    #def __iter__(self):
-        #return iter(self.vertexArray)
         
     def addVertex(self, node):
         if self.vertexArray[node] == None:
@@ -52,7 +73,7 @@ class Graph():
         
     def printGraph(self):
         for i in range(self.numVertices):
-            print i, self.vertexArray[i]
+            print (i, self.vertexArray[i])
         
     def getVertices(self):
         return self.vertexArray        
@@ -65,11 +86,19 @@ def squareDistance( point1, point2 ):
     return (point2[0] - point1[0])**2 + (point2[1] - point1[1])**2 + (point2[2] - point1[2])**2
 
 def float_range(start, end, step):
+    '''
+    Custom Range function so we can iterate through "FOR" loops with a float iterator.
+    '''
     while start <= end:
         yield start
         start += step
 
 def returnCollisionPoints(point, dir, fnMesh):
+    ''' Get collision information from a raycast onto a mesh
+
+    - point: origin point in space of the ray
+    - dir: direction of the ray
+    - fnMesh: mesh used for the collision testing '''
     point = om.MFloatPoint(*point)
     
     hitPoints = om.MFloatPointArray()
@@ -89,25 +118,24 @@ def returnCollisionPoints(point, dir, fnMesh):
     return hitPoints, hitFaces
 
 def getNormal(face_):
+    ''' Extract the normal vector in a MVector from Maya Python's string format
+
+    - face_: ID of the face we are getting the normal of '''
     normal = mc.polyInfo(face_, faceNormals = True)
     
     # convert the string to array with regular expression
-    normal = re.findall(r"[\w.-]+", normal[0]) #normal[0].split(' ')
+    normal = re.findall(r"[\w.-]+", normal[0])
     
     normal = MVector( float(normal[2]),\
                       float(normal[3]),\
                       float(normal[4]) )
     return normal
 
-def getIndexOfTuple(l, index, value):
-    for pos,t in enumerate(l):
-        if t[index] == value:
-            return pos
-
-    # Matches behavior of list.index
-    raise ValueError("list.index(x): x not in list")
-
 def getClosestVertex( objectPos, baseMesh ):
+    ''' Retrieve the vertex of a mesh that is closest to a specified position
+
+    - objectPos: position in world space
+    - baseMesh: mesh we are getting the vertex from '''
     object = om.MPoint( objectPos[0], objectPos[1], objectPos[2] )
 
     startingPoint = om.MPoint()
@@ -115,6 +143,7 @@ def getClosestVertex( objectPos, baseMesh ):
     faceIdxUtil.createFromInt(-1)
     faceIntPtr = faceIdxUtil.asIntPtr()
 
+    # Get closest face ID
     baseMesh.getClosestPoint(object, startingPoint, om.MSpace.kWorld, faceIntPtr)
     faceIdx = faceIdxUtil.getInt(faceIntPtr)
     
@@ -122,7 +151,7 @@ def getClosestVertex( objectPos, baseMesh ):
     
     baseMesh.getPolygonVertices( faceIdx, faceVertices )
                     
-    #setting vertex [0] as the closest one
+    # setting vertex [0] as the closest one
     vert = om.MPoint()
     baseMesh.getPoint(faceVertices[0], vert)
     smallestDist = vert.distanceTo(object)
@@ -138,7 +167,14 @@ def getClosestVertex( objectPos, baseMesh ):
             closestID = faceVertices[i]
     return closestID
 
-def populateAlongSurface( objects, inwards, startFrame, frameRange, growthSpeed):
+def animateAlongSurface( objects, inwards, startFrame, frameRange, growthSpeed):
+    ''' Animate the scale of objects based on their distance from a point
+
+    - objects: list of objects we want to animate
+    - inwards: whether the scale should increase more rapidly the farther they are from the starting point or closer
+    - startFrame: frame to start the animation on
+    - frameRange: duration of the animation in frames
+    - growthSpeed: how fast should an object scale '''
     objSizes = []
     
     for obj in objects:
@@ -154,6 +190,7 @@ def populateAlongSurface( objects, inwards, startFrame, frameRange, growthSpeed)
     sel.getDagPath(0, dag)
     fnMesh = om.MFnMesh(dag)
     
+    # Use the closest vertex on the base mesh from the control sphere as the starting point
     startPoint = getClosestVertex( spherePos, fnMesh )
 
     graphDistances = calculate_distances( graph, startPoint )
@@ -163,6 +200,8 @@ def populateAlongSurface( objects, inwards, startFrame, frameRange, growthSpeed)
         if graphDistances[i] > maxDist:
             maxDist = graphDistances[i]
     
+    # Get the closest vertex on the base mesh from each submesh and use them to get the geodesic distance from the
+    # starting point to them
     for i in range(len(objects)):
         objPos = mc.xform(objects[i], q = True, ws = True, rp = 1) 
         objectDistances.append( graphDistances[ getClosestVertex( objPos, fnMesh ) ] / maxDist )
@@ -206,7 +245,13 @@ def populateAlongSurface( objects, inwards, startFrame, frameRange, growthSpeed)
             mc.progressWindow(edit = True, step = 1)
     mc.progressWindow(endProgress = 1)
 
-def populateWithSphere(startFrame, frameRange, objects, insideSphere):
+def animateWithSphere(startFrame, frameRange, objects, insideSphere):
+    ''' Animate the scale of objects based on their distance to the _ControlSphere
+
+    - objects: list of objects we want to animate
+    - startFrame: frame to start the animation on
+    - frameRange: duration of the animation in frames
+    - insideSphere: whether objects should scale up the more they are inside the sphere, or the opposite '''
     
     objPositions = []
     objSizes = []
@@ -226,6 +271,8 @@ def populateWithSphere(startFrame, frameRange, objects, insideSphere):
             
             pointDistanceToSphere = distance(objPositions[z], spherePos)
             
+            # Whether objects should grow bigger the closer within the sphere they are, or the
+            # farther away from it they are
             if insideSphere == False:
                 sphereInfluence = pointDistanceToSphere / sphereRadius - 1
                 if sphereInfluence > 1:
@@ -237,6 +284,9 @@ def populateWithSphere(startFrame, frameRange, objects, insideSphere):
                 sphereInfluence = 1 - pointDistanceToSphere / sphereRadius
                 if sphereInfluence < 0:
                     sphereInfluence = 0
+                    
+            # Testing has proven that a square root dropoff from the center of the sphere generates better results
+            # than a linear one, which is why apply this operation
             sphereInfluence = m.sqrt(sphereInfluence)
             mc.select(objects[z])
             mc.setKeyframe( v = objSizes[z][0] * sphereInfluence, at = 'scaleX')
@@ -247,7 +297,13 @@ def populateWithSphere(startFrame, frameRange, objects, insideSphere):
         mc.progressWindow(edit = True, step = 1)
     mc.progressWindow(endProgress = 1)
 
-def populateNoSphere(startFrame, endFrame, objects):
+def animateNoSphere(startFrame, endFrame, objects):
+    ''' Animate the scale of objects uniformly
+
+    - objects: list of objects we want to animate
+    - startFrame: frame to start the animation on
+    - frameRange: duration of the animation in frames '''
+    
     mc.currentTime( endFrame, edit = True )
     for obj in objects:
         objSize = mc.xform(obj, q = True, ws = True, s = True)
@@ -265,6 +321,10 @@ def populateNoSphere(startFrame, endFrame, objects):
         mc.setKeyframe( v = 0 , at = 'scaleZ')
 
 def getAverageWeight(vertices):
+    ''' Get the average weight of 3 vertices
+
+    - vertices: the vertices whose weights are to be used to get the average '''
+    
     index1 = int(re.findall(r"[\w]+", vertices[0])[2])
     index2 = int(re.findall(r"[\w]+", vertices[1])[2])
     index3 = int(re.findall(r"[\w]+", vertices[2])[2])
@@ -273,6 +333,14 @@ def getAverageWeight(vertices):
     return (weights[index1] + weights[index2] + weights[index3]) / 3.0
 
 def placeInstance(instanceName, position, size, face, randRotation, animatedParentGroup = None):
+    ''' Instantiate an object and place, scale and rotate it at the desired position.
+
+    - instanceName: name of the object to be instantiated
+    - position: where to place the instance
+    - size: how big should the instance be
+    - face: polygon the instance is to be placed on
+    - randRotation: if the instance should receive a random rotation on the local Y axis
+    - animatedParentGroup: if the instance should be parented to something (required in the case of an animated base mesh) '''
     faceNormal = getNormal(face)
     
     psi = mc.angleBetween(euler = True, v1 = (0.0, 1.0, 0.0),
@@ -288,13 +356,52 @@ def placeInstance(instanceName, position, size, face, randRotation, animatedPare
     mc.scale( size, size, size, objectInstance )
     
     if animatedParentGroup != None:
+        mc.select(face, r = True)
         mc.pointOnPolyConstraint( face, animatedParentGroup, mo = False )
         mc.parent( objectInstance, animatedParentGroup )
         mc.parent( animatedParentGroup, groupName )
     else:
         mc.parent ( objectInstance, groupName )
 
-def calculateAndInstantiate(subMeshName, hitPoint, hitFace, direction, randRotation, animatedParentGroup = None):
+def getTriangleFromHitpoint(hitPoint, faceID):
+    ''' Given a polygon, return the vertices of a triangle within it based on their distance to the specified position.
+    
+    - hitPoint: position in space to calculate distance from
+    - faceID: ID of the polygon '''
+    
+    mc.select(baseMeshName + '.f[' + str(faceID) + ']')
+    mc.select( mc.polyListComponentConversion(tv = True) )
+    selectedVerts = mc.ls( sl = True, fl = True )
+    
+    # If the polygon is a quad, remove the vertex that is furthest away from the hitPoint, so we can generate
+    # a triangle out of the 3 closest vertices
+    if len(selectedVerts) == 4:       
+        maxDist = -1
+        distID = -1
+        for z in range(len(selectedVerts)):
+            dist = squareDistance( mc.pointPosition(selectedVerts[z]), hitPoint )
+            if dist > maxDist:
+                maxDist = dist
+                distID = z
+        del selectedVerts[distID]
+    return selectedVerts
+
+def calculateAndInstantiate(subMeshName, hitPoint, hitFace, direction, randRotation):
+    ''' In the case of Aligned Distribution Type, check whether a submesh should be placed after a raycast has hit the base mesh.
+    
+    - subMeshName: name of the submesh to be instantiated
+    - hitPoint: position of the raycast intersection
+    - hitFace: ID of the face where the raycats intersection occured
+    - direction: direction of the raycast
+    - randRotation: whether the submesh is to receive a random rotation on the local Y axis after it has been instantiated
+    - animatedParentGroup: if the submesh should be parented to something after being instantiated (required in the case of an animated base mesh) '''
+    
+    # If the base mesh is animated, for the pointOnPoly contraint to work properly, submeshes need to be parented to
+    # a dummy object, in this case, an empty group
+    animatedGroupName = None
+    if isBaseAnimated:
+        animatedGroupName = mc.group(em = True)
+    
     selectedVerts = getTriangleFromHitpoint(hitPoint, hitFace)
                         
     averageWeight = getAverageWeight(selectedVerts)
@@ -303,10 +410,22 @@ def calculateAndInstantiate(subMeshName, hitPoint, hitFace, direction, randRotat
                         
     dotProduct = faceNormal[0] * direction[0] + faceNormal[1] * direction[1] + faceNormal[2] * direction[2]
                         
+    # Only place an instance if the average weight of the triangle is above a certain threshold and the angle between the
+    # normal of the face and the direction of the ray is small enough (otherwise we sometimes get odd collisions with faces
+    # that are facing far away from the ray and we get overlaps between the "Imaginary Plane" projections)
     if averageWeight > 0.05 and abs(dotProduct) > 0.6:
-        placeInstance(subMeshName, hitPoint, averageWeight, face, randRotation, animatedParentGroup )
+        placeInstance(subMeshName, hitPoint, averageWeight, face, randRotation, animatedGroupName)
+    else:
+        mc.delete(animatedGroupName)
+
         
 def calculateFaceAreaArray( sampleArray ):
+    ''' Generate a list of polygon IDs, where the number of occurence of a poly is proportional to its area (polygons with bigger areas will be added multiple times).
+    
+    - sampleArray: given list to add elements into  
+    
+    Idea for this approach taken from: http://www.joesfer.com/?p=84'''
+    
     faces = mc.polyEvaluate( baseMeshName, f = True )
 
     sel = om.MSelectionList()
@@ -322,6 +441,7 @@ def calculateFaceAreaArray( sampleArray ):
     positions = om.MPointArray()
     meshFn.getPoints(positions, om.MSpace.kWorld)
     
+    # Calculate the areas of every polygon on the mesh
     for i in range( faces ):
         indices = om.MIntArray()
         meshFn.getPolygonVertices(i, indices)
@@ -355,17 +475,21 @@ def calculateFaceAreaArray( sampleArray ):
             sampleArray.append(i)
     
 
-def randomPopulation(subMeshNames, numberOfInstances, randomRotation):   
-    numberOfFaces = mc.polyEvaluate( baseMeshName, f = True )
-    vertList = mc.ls(baseMeshName + '.vtx[*]', fl = True)
+def randomPopulation(subMeshNames, numberOfInstances, randomRotation):  
+    ''' Populate the base mesh with submeshes randomly
+    
+    - subMeshNames: list of names of the submeshes
+    - numberOfInstances: how many submeshes should be instantiated
+    - randRotation: whether the submesh is to receive a random rotation on the local Y axis after it has been instantiated '''
+     
     sampleArray = []
     calculateFaceAreaArray( sampleArray )
     
     mc.progressWindow(title = 'Progress', progress = 0, status = 'Populating...', isInterruptable = True, max = numberOfInstances)
     for i in range(numberOfInstances):
-        groupy  = None
-        if isBaseAnimated:
-            groupy = mc.group(em = True)
+        
+        # If the base mesh is animated, for the pointOnPoly contraint to work properly, submeshes need to be parented to
+        # a dummy object, in this case, an empty group
         
         randomFace = rand.choice( sampleArray )
         randomFace = baseMeshName + '.f[' + str(randomFace) + ']'
@@ -405,7 +529,11 @@ def randomPopulation(subMeshNames, numberOfInstances, randomRotation):
             
         randomPoint = v1 + ( v2 - v1) * a + ( v3 - v1 ) * b
         
-        placeInstance(rand.choice(subMeshNames), randomPoint, averageWeight, randomFace, randomRotation, groupy)
+        animatedGroupName = None
+        if isBaseAnimated:
+            animatedGroupName = mc.group(em = True)
+        
+        placeInstance(rand.choice(subMeshNames), randomPoint, averageWeight, randomFace, randomRotation, animatedGroupName)
         
         if mc.progressWindow (q = True, isCancelled = True):
             break
@@ -413,27 +541,28 @@ def randomPopulation(subMeshNames, numberOfInstances, randomRotation):
 
     mc.progressWindow(endProgress = 1)
 
-
-def getTriangleFromHitpoint(hitPoint, faceID):
-    mc.select(baseMeshName + '.f[' + str(faceID) + ']')
-    mc.select( mc.polyListComponentConversion(tv = True) )
-    selectedVerts = mc.ls( sl = True, fl = True )
+def projectPlane(originX, originY, originDepth, width, height, dir, subMeshNames, cellWidth, cellHeight, pWindow, randRotation):
+    ''' Given information about an "Imaginary Plane", perpendicular to one of the 3 global axis, we perform raycasts from different points of his to the base mesh.
     
-    if len(selectedVerts) == 4:       
-        maxDist = -1
-        distID = -1
-        for z in range(len(selectedVerts)):
-            dist = squareDistance( mc.pointPosition(selectedVerts[z]), hitPoint )
-            if dist > maxDist:
-                maxDist = dist
-                distID = z
-        del selectedVerts[distID]
-    return selectedVerts
-
-def projectPlane(originX, originY, originDepth, width, height, dir, subMeshNames, cellWidth, cellHeight, onlyOuterProjection, pWindow, randRotation):
+    - originX: first coordinate of the imaginary plane
+    - originY: second coordinate of the imaginary plane
+    - originDepth: third coordinate of the imaginary plane
+    - width: width of the plane in world space units
+    - height: height of the plane in world space units
+    - dir: direction the plane is facing
+    - subMeshNames: list of names of the submeshes
+    - cellWidth: width of a plane's subdivision in world space units
+    - cellHeight: height of a plane's subdivision in world space units
+    - pWindow: progress window
+    - randRotation: whether the submesh is to receive a random rotation on the local Y axis after it has been instantiated '''
+    
     point = [0, 0, 0]
     dirVector = om.MFloatVector(*dir)
     
+    # Check in which of the 3 global axis the plane is facing. We will iterate through the imaginary plane's vertices in a 2D
+    # fashion, only using the cellWidth and cellHeight. However, we have to turn these coordinates in world space, based on 
+    # the global axis we've just identified, so we use these Index variables to figure out which axis does each of the 
+    # provided parameters actually represent.
     if abs(dir[2]) == 1:
         iIndex = 0
         jIndex = 1
@@ -461,25 +590,22 @@ def projectPlane(originX, originY, originDepth, width, height, dir, subMeshNames
 
             hitPoints, hitFaces = returnCollisionPoints(point, dirVector, mesh)
                 
-            #if onlyOuterProjection == True:
-                #if hitPoints[0]:
-                    #calculateAndInstantiate(subMeshName, hitPoints[0], hitFaces[0], dir)
-                            
-                #if hitPoints.length() > 1:
-                    #calculateAndInstantiate(subMeshName, hitPoints[hitPoints.length()-1],
-                        #hitFaces[hitPoints.length()-1], dir)
-            #else:
             for z in range(hitPoints.length()):
-                if isBaseAnimated:
-                    calculateAndInstantiate(rand.choice(subMeshNames), hitPoints[z], hitFaces[z], dir, randRotation, mc.group(em = True))
-                else:
-                    calculateAndInstantiate(rand.choice(subMeshNames), hitPoints[z], hitFaces[z], dir, randRotation, None, randRotation)
+                calculateAndInstantiate(rand.choice(subMeshNames), hitPoints[z], hitFaces[z], dir, randRotation)
             if mc.progressWindow (pWindow, q = True, isCancelled = True):
                 break
 
             mc.progressWindow(pWindow, edit = True, status= ('Populating mesh...'), step = 1)
 
 def alignedPopulation(subMeshNames, width, height, depth, randRotation):
+    ''' Populate the base mesh by projecting rays from uniformly subdivided imaginary planes perpendicular to the 3 global axis.
+    
+    - subMeshNames: list of names of the submeshes
+    - width: number of subdivisions along the X global axis
+    - height: number of subdivisions along the Y global axis
+    - depth: number of subdivisions along the X global axis
+    - randRotation: whether the submesh is to receive a random rotation on the local Y axis after it has been instantiated '''
+    
     bbox = mc.exactWorldBoundingBox(baseMeshName)
     
     planeOriginX = bbox[0]
@@ -493,6 +619,8 @@ def alignedPopulation(subMeshNames, width, height, depth, randRotation):
     planeHeight = abs( planeEndY - planeOriginY )
     planeDepth = abs( planeEndZ - planeOriginZ )
    
+    # We take the mesh bounding box and treat each side of it as one of the 3 "Imaginary Planes". We then calculate how big
+    # each subdivision would be on each axis.
     cellWidth = planeWidth / width
     cellHeight = planeHeight / height
     cellDepth = planeDepth / depth
@@ -501,26 +629,39 @@ def alignedPopulation(subMeshNames, width, height, depth, randRotation):
     
     progrWindow = mc.progressWindow(title = 'Progress', progress = 0, status = 'Populating mesh...', isInterruptable = True, max = totalRayCasts)
     
+    # Take each of the 3 imaginary planes and project rays from their "vertices" onto the base mesh
     projectPlane(planeOriginX, planeOriginY, planeEndZ,
                 planeEndX, planeEndY, [0, 0, -1], subMeshNames, cellWidth,
-                cellHeight, False, progrWindow, randRotation)
+                cellHeight, progrWindow, randRotation)
     
     projectPlane(planeOriginZ, planeOriginY, planeEndX,
                 planeEndZ, planeEndY, [-1, 0, 0], subMeshNames, cellDepth,
-                cellHeight, False, progrWindow, randRotation)
+                cellHeight, progrWindow, randRotation)
                 
     projectPlane(planeOriginX, planeOriginZ, planeEndY,
                 planeEndX, planeEndZ, [0, -1, 0], subMeshNames, cellWidth,
-                cellDepth, False, progrWindow, randRotation)
+                cellDepth, progrWindow, randRotation)
     mc.progressWindow(endProgress = 1)
    
 def evenPopulation(subMeshNames, numberOfInstances, randRotation):
+    ''' Populate the base mesh randomly, while trying to keep the instantiated submeshes as far away from each other.
+    
+    - subMeshNames: list of names of the submeshes
+    - numberOfInstances: how many submeshes should be instantiated
+    - randRotation: whether the submesh is to receive a random rotation on the local Y axis after it has been instantiated
+    
+    Best Candidate Selection algorithm idea taken from: https://blog.demofox.org/2017/10/20/generating-blue-noise-sample-points-with-mitchells-best-candidate-algorithm/'''
+    
     graph = g.getVertices()
     sampleList = []
+    
+    # Generate the Samples list of polygon indices
     calculateFaceAreaArray( sampleList )
     
     numberOfVerts = mc.polyEvaluate( baseMeshName, v = True )
     startingVertex = rand.randrange(0, numberOfVerts)
+    
+    #Pick a random starting vertex
     while mc.getAttr(baseMeshShape + '.growthWeights')[startingVertex] < 0.05:
         startingVertex = rand.randrange(0, numberOfVerts)
         
@@ -535,22 +676,25 @@ def evenPopulation(subMeshNames, numberOfInstances, randRotation):
     
     sampleMultiplier = 0.7
     dir = om.MVector()
-    numberOfFaces = mc.polyEvaluate( baseMeshName, f = True )
-    vertList = mc.ls(baseMeshName + '.vtx[*]', fl = True)
     
     progrWindow = mc.progressWindow(title = 'Progress', progress = 0, status = 'Populating mesh...', isInterruptable = True, max = numberOfInstances)
-    for i in range(numberOfInstances - 1):
+    for i in range(numberOfInstances):
+        
+        animatedGroupName = None
+        if isBaseAnimated:
+            animatedGroupName = mc.group(em = True)
+        
+        
+        # We establish a number of candidates to generate and check, which increases linearly with the amount of submeshes
+        # we have placed so far
         numberOfCandidates = len(usedVertices) * sampleMultiplier + 1
         
         bestDist = 0
         bestID = -1
         bestWeight = 0
         bestPos = []
-        bestFace = None
-        
-        animatedGroup = None
-        if isBaseAnimated:
-            animatedGroup = mc.group(em = True)
+        bestFace = baseMeshName + '.f[0]'
+            
         for k in range(int(numberOfCandidates)):
             randomFace = rand.choice(sampleList)
             randomFace = baseMeshName + '.f[' + str(randomFace) + ']'
@@ -576,13 +720,12 @@ def evenPopulation(subMeshNames, numberOfInstances, randRotation):
             
                 averageWeight = getAverageWeight(currentTriangle)
                 
-            mc.select(currentTriangle, r = True)
+            #mc.select(currentTriangle, r = True)
             
             # Get random point within this face
-            # https://math.stackexchange.com/questions/538458/triangle-point-picking-in-3d
-            v1 = MVector(*mc.pointPosition(currentTriangle[0]))
-            v2 = MVector(*mc.pointPosition(currentTriangle[1]))
-            v3 = MVector(*mc.pointPosition(currentTriangle[2]))
+            v1 = MVector(*mc.pointPosition(currentTriangle[0], w = True))
+            v2 = MVector(*mc.pointPosition(currentTriangle[1], w = True))
+            v3 = MVector(*mc.pointPosition(currentTriangle[2], w = True))
             
             a = rand.random()
             b = rand.random()
@@ -592,44 +735,34 @@ def evenPopulation(subMeshNames, numberOfInstances, randRotation):
                 b = 1-b
             randomPoint = v1 + ( v2 - v1 ) * a + ( v3 - v1 ) * b
             
-            distToClosestVertID = 9999999
-            #closestVertID = -1
-            
-            # GET THE CLOSEST VERTEX IN THE TRIANGLE
-            #for j in range(3):
-                #d = squareDistance( mc.pointPosition(currentTriangle[j]), randomPoint )
-                #if d < distToClosestVertID:
-                    #distToClosestVertID = d
-                    #closestVertID = currentTriangle[j]
-             
-            # GET A RANDOM VERTEX        
-            #randIndex = rand.randrange(0, numberOfVerts)
-            #weight = getWeightAtVertexIndex(randIndex)
-            #while weight == 0:
-                #randIndex = rand.randrange(0, numberOfVerts)
-                #weight = getWeightAtVertexIndex(randIndex)
-            
             #GET A RANDOM VERTEX FROM THE SELECTED TRIANGLE
             vertID = int(re.findall(r"[\w]+", currentTriangle[rand.randint(0, 2)])[2])
+            
+            # We compare the geodesic distance (using the Graph we generated before and using the Dijkstra pathfinding
+            # algorithm) between our current vertex and all of the other vertices we have used to place submeshes
             distances = calculate_distances( graph, vertID )
             minDist = 999999.9
             for vertexID in usedVertices:
                 dist = distances[vertexID]
                 if dist < minDist:
                     minDist = dist
-                
+            
+            # We take the smallest distance and compare it with our Best Distance (defaulted to 0 at the beginning of each
+            # candidate search). If it's greater than it, then it means this is the vertex which is the furthest away from
+            # any other vertex we've used, so we make it our new Best Candidate
             if minDist > bestDist:
                 bestDist = minDist
                 bestID = vertID
                 bestWeight = averageWeight
                 bestPos = randomPoint
                 bestFace = randomFace
+ 
+        # Once we've gone through all the candidates, we place and rotate the new submesh according to the
+        # Best Candidate's information and add the Best Vertex to the "used vertices" list
+        placeInstance(rand.choice(subMeshNames), bestPos, bestWeight, bestFace, randRotation, animatedGroupName)
         
         usedVertices.append(bestID)
-            
-        #mesh.getVertexNormal(bestID, False, dir, om.MSpace.kWorld)
-        #dir = getNormal(bestFace)
-        placeInstance(rand.choice(subMeshNames), bestPos, bestWeight, bestFace, randRotation, animatedGroup)
+        
         if mc.progressWindow (q = True, isCancelled = True):
             break
         mc.progressWindow(edit = True, step = 1)
@@ -637,11 +770,14 @@ def evenPopulation(subMeshNames, numberOfInstances, randRotation):
     mc.progressWindow(endProgress = 1)
     
 def prepareBaseMesh():
+    ''' Initialize the base mesh with the proper Paintable Attribute on its Shape Node, as well as generate the Control Sphere and vertex graph. '''
+    
     if mc.attributeQuery('growthWeights', node = baseMeshShape, exists = True) == False:
         mc.addAttr(baseMeshShape, ln = 'growthWeights', nn = 'GrowthWeights', dt = 'doubleArray')
         
     mc.makePaintable('mesh', 'growthWeights', at = 'doubleArray')
     
+    # Create the control sphere and assign it a semi-transparent material
     if mc.objExists(controlSphereName) == False:
         mc.polySphere(n = controlSphereName, r = 1)
         semitransparentMaterial = mc.shadingNode('blinn', asShader = True)
@@ -666,6 +802,7 @@ def prepareBaseMesh():
     connectedVertices = om.MIntArray()
     checkedNodes = [False] * positions.length()
     
+    # Initialize the graph with the base mesh's vertices
     while not iter.isDone():
         curVertexID = iter.index()
         checkedNodes[curVertexID] = True
@@ -682,6 +819,27 @@ def prepareBaseMesh():
         
 def populateGenerateAnimate( alignmentTypeCtrl, randomCtrl, alignedCtrl, evenCtrl, subMeshNamesCtrl, useSphereCtrl, alongSurfaceCtrl, insideSphereCtrl, startFrameCtrl,
                             endFrameCtrl, numberOfInstancesCtrl, widthCtrl, heightCtrl, depthCtrl, animatedCtrl, speedCtrl, randRotCtrl, *pArgs ):
+    ''' The core function that runs the script based on the parameters received from the UI.
+    
+    - alignmentTypeCtrl: radio group for the distribution/population type
+    - randomCtrl: radio button for random population
+    - alignedCtrl: radio button for aligned population
+    - evenCtrl: radio button for evenly spaced population
+    - subMeshNamesCtrl: text field with the names of the submeshes
+    - useSphereCtrl: radio button for Sphere Mask animation type
+    - alongSurfaceCtrl: radio button for Along Surface animation type
+    - insideSphereCtrl: radio button for whether the animation should be inside the sphere, in the case of Sphere Mask animation, or grow towards the sphere in the case of Along Surface animation
+    - startFrameCtrl: number field for the starting frame of the animation
+    - endFrameCtrl: number field for the ending frame of the animation
+    - numberOfInstancesCtrl: number field for the desired number of instances, in the cases of Random or Evenly Spaced population
+    - widthCtrl: number field for the desired number of subdivisions along the X axis, in the case of Aligned population
+    - heightCtrl: number field for the desired number of subdivisions along the Y axis, in the case of Aligned population
+    - depthCtrl: number field for the desired number of subdivisions along the Z axis, in the case of Aligned population
+    - animatedCtrl: checkbox for animated base meshes
+    - speedCtrl: submesh growth animation speed, in the case of Along Surface animation
+    - randRotCtrl: checkbox for whether the submesh is to receive a random rotation on the local Y axis after it has been instantiated'''
+    
+                                
     alignmentType = mc.radioCollection(alignmentTypeCtrl, q = True, sl = True)
     
     randomCtrl = randomCtrl.split("|")
@@ -713,28 +871,36 @@ def populateGenerateAnimate( alignmentTypeCtrl, randomCtrl, alignedCtrl, evenCtr
     
     mc.group(em = True, name = groupName)
 
+    # Decide which way to populate/distribute the submeshes along the base mesh
     if alignmentType == randomCtrl:
-        randomPopulation(subMeshNames, numberOfInstances, randRotation)#calculateFaceAreaArray()
+        randomPopulation(subMeshNames, numberOfInstances, randRotation)
     elif alignmentType == alignedCtrl:
         alignedPopulation(subMeshNames, width, height, depth, randRotation)
     elif alignmentType == evenCtrl:
         evenPopulation(subMeshNames, numberOfInstances, randRotation)
-        
+    
+    # Decide which way to animate the submeshes along the base mesh
     submeshes = mc.listRelatives(groupName, c = True)      
     if useSphere == True:
-        populateWithSphere(startFrame, frameRange, submeshes, insideSphere)
+        animateWithSphere(startFrame, frameRange, submeshes, insideSphere)
     elif alongSurface == True:
-        populateAlongSurface( submeshes, insideSphere, startFrame, frameRange, speed )
+        animateAlongSurface( submeshes, insideSphere, startFrame, frameRange, speed )
     else:
-        populateNoSphere(startFrame, endFrame, submeshes)
+        animateNoSphere(startFrame, endFrame, submeshes)
 
 def switchRandomAlignmentSettings( numberText, numberCtrl, *pArgs ):
+    '''
+    Switch the visibility of the Random animation type parameters in the interface.
+    '''
     visibility = mc.text( numberText, q = True, enable = True )
     
     mc.text( numberText, e = True, enable = not visibility )
     mc.intField( numberCtrl, e = True, enable = not visibility )
     
 def switchAlignedAlignmentSettings( widthText, widthCtrl, heightText, heightCtrl, depthText, depthCtrl, *pArgs ):
+    '''
+    Switch the visibility of the Aligned animation type parameters in the interface.
+    '''
     visibility = mc.text( widthText, q = True, enable = True )
     
     mc.text( widthText, e = True, enable = not visibility )
@@ -745,6 +911,9 @@ def switchAlignedAlignmentSettings( widthText, widthCtrl, heightText, heightCtrl
     mc.intField( depthCtrl, e = True, enable = not visibility )
 
 def switchInfluenceTypeSettings ( textCtrl, insideCtrl, outsideCtrl, *pArgs ):
+    '''
+    Switch the visibility of the "Inside Sphere"/"Outside Sphere" or "Inwards Towards Sphere"/"Outwards From Sphere" radio buttons.
+    '''
     visibility = mc.text( textCtrl, q = True, vis = True )
     
     mc.text( textCtrl, e = True, vis = not visibility )
@@ -765,6 +934,7 @@ def changeInfluenceTypeLabelsForAlongSurface( insideCtrl, outsideCtrl, label1, l
       
 #GUI
 def createUI():
+    ''' Function to generate the user interface. '''
     
     windowID = "GUI"
     if mc.window(windowID, exists = True):
@@ -879,11 +1049,12 @@ def createUI():
     
     
 if __name__ == "__main__":
+    
+    # Store the base mesh name, base mesh shape, the group under which the submeshes will be parented under, control sphere
+    # name, vertices graph and whether the base mesh is animated as global variables
     baseMeshName = mc.ls(sl = True)
     baseMeshName = baseMeshName[0]
     baseMeshShape = mc.listRelatives( shapes = True )[0]
-    #print baseMeshName
-    #print baseMeshShape
     
     groupName = '_PopulationGroup'
     
@@ -892,6 +1063,8 @@ if __name__ == "__main__":
     isBaseAnimated = False
     
     g = Graph( mc.polyEvaluate( v = True ) )
+    
+    # Create the UI and initialize the base mesh
     createUI()
     prepareBaseMesh()
         
