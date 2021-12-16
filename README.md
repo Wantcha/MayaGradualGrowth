@@ -2,6 +2,7 @@
 Animated mesh population in Maya is now at the tip of your fingers!
 
 ![thumbnail](https://user-images.githubusercontent.com/64153611/110856040-ccb96a80-82bf-11eb-8b77-29abb6124823.png)
+
 You can check out a few video demonstrations of how the script operates here: https://www.artstation.com/artwork/d8oEOe
 
 
